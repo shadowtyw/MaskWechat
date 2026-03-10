@@ -61,7 +61,7 @@ internal class MaskItemUIController(private val context: Context, private val ma
     // 字典映射：左边是显示在菜单里的名字，右边是底层的真实微信号或控制指令
     private val officialAccountDict = listOf(
         "🔮 自动盲盒 (全自动智能分配)" to "",
-        "🚫 完全隐藏 (主页不显示，仅红点提示)" to "hide_completely", // 新增的完全隐藏指令
+        "🚫 完全隐藏 (主页不显示，仅红点提示)" to "hide_completely",
         "📁 文件传输助手" to "filehelper",
         "💰 微信支付" to "wxpayapp",
         "👥 微信团队" to "weixin",
@@ -171,5 +171,11 @@ internal class MaskItemUIController(private val context: Context, private val ma
         // 将备注名和变脸ID放在最后，方便观察联动填充的效果
         root.addView(etTagName, MATCH_PARENT, WRAP_CONTENT)
         root.addView(etMapId, MATCH_PARENT, WRAP_CONTENT)
+
+        // 补刀：根据当前的 mask.mapId 强制初始化一次输入框的可见性，防止界面闪烁
+        when (mask.mapId) {
+            "hide_completely", "" -> etMapId.visibility = View.GONE
+            else -> etMapId.visibility = View.VISIBLE
+        }
     }
 }
