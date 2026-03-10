@@ -226,6 +226,18 @@ class HideMainUIListPluginPart : IPlugin {
         })
     }
 
+    // 新增一个辅助方法，用于递归清理被复用 View 的拦截标记
+    private fun cleanRecycledViewHooks(view: View) {
+        if (view is ViewGroup) {
+            for (i in 0 until view.childCount) {
+                cleanRecycledViewHooks(view.getChildAt(i))
+            }
+        }
+        nameViewMap.remove(view)
+        msgViewMap.remove(view)
+        unreadViewMap.remove(view)
+    }
+
     private fun hookListViewAdapter(adapterClazz: Class<*>) {
         var getViewMethod: Method? = null
         var currentClass: Class<*>? = adapterClazz
@@ -242,6 +254,21 @@ class HideMainUIListPluginPart : IPlugin {
         
         XposedHelpers2.hookMethod(getViewMethod, object : XC_MethodHook2() {
             override fun beforeHookedMethod(param: MethodHookParam) {
+                // ================= 【修复闪烁核心】 =================
+                // 拦截复用的 convertView，在微信绑定数据前，彻底清空残留的 Hook 标记
+                val convertView = param.args[1] as? View
+                if (convertView != null) {
+                    // 如果这个 View 是我们下面造出来的“占位空 View”，必须设为 null
+                    // 否则微信内部去强转 ViewHolder 时会直接 Crash！
+                    if (convertView.tag == "HIDE_COMPLETELY_DUMMY") {
+                        param.args[1] = null 
+                    } else {
+                        // 正常复用的 View，递归清理掉 HashMap 里的残留，防止影响正常好友
+                        cleanRecycledViewHooks(convertView)
+                    }
+                }
+                // =================================================
+
                 val adapter = param.thisObject as ListAdapter
                 val position = (param.args[0] as? Int?) ?: return
                 val itemData = adapter.getItem(position) ?: return
@@ -252,13 +279,13 @@ class HideMainUIListPluginPart : IPlugin {
                     if (maskBean != null) {
                         param.setObjectExtra("real_wxid", chatUser)
                         val targetId = if (maskBean.mapId == "hide_completely") {
-                            "filehelper" // 随便给个默认的，反正马上会被设为不可见
+                            "filehelper" 
                         } else if (maskBean.mapId.isNullOrBlank()) {
                             getAutoTarget(chatUser).first
                         } else {
                             maskBean.mapId
                         }
-                        // 这步是为了骗取头像加载器
+                        // 骗取头像加载器
                         XposedHelpers2.setObjectField(itemData, "field_username", targetId)
                     }
                 }
@@ -268,11 +295,40 @@ class HideMainUIListPluginPart : IPlugin {
                 val adapter: ListAdapter = param.thisObject as ListAdapter
                 val position: Int = (param.args[0] as? Int?) ?: return
                 val itemData: Any = adapter.getItem(position) ?: return
-                val itemView: View = param.args[1] as? View ?: return
+                val itemView: View = param.args[1] as? View ?: return // 这是原有的 convertView
 
                 val realWxid = param.getObjectExtra("real_wxid") as? String
 
-                // ===== 解析需要处理的子控件 =====
+                // ===== 处理非隐藏对象（如果刚好处在复用周期，恢复状态） =====
+                if (realWxid == null) {
+                    cleanRecycledViewHooks(itemView) 
+                    return
+                }
+
+                // ================= 处理目标对象 =================
+                XposedHelpers2.setObjectField(itemData, "field_username", realWxid)
+
+                val maskBean = WXMaskPlugin.getMaskBeamById(realWxid)
+                val isCompletelyHide = maskBean?.mapId == "hide_completely"
+
+                // ================= 【修复灰线核心】 =================
+                if (isCompletelyHide) {
+                    // 彻底抛弃微信的复杂 Item 布局，直接返回一个干干净净的空 View
+                    val context = (param.args[2] as ViewGroup).context // 从 parent 获取 context 最稳妥
+                    val dummyView = View(context)
+                    dummyView.layoutParams = AbsListView.LayoutParams(-1, 1) // 高度设为 1px 比 0px 安全，防止某些老版本 ListView 测量崩溃
+                    dummyView.visibility = View.GONE
+                    dummyView.tag = "HIDE_COMPLETELY_DUMMY" // 打上标记，防复用报错
+                    
+                    param.result = dummyView // 狸猫换太子！直接替换返回值
+                    
+                    // 清除原 View 里的拦截，防内存泄漏
+                    cleanRecycledViewHooks(itemView)
+                    return 
+                }
+                // =================================================
+
+                // 以下是正常的伪装逻辑 (获取 View ID 等逻辑保持不变)
                 val nameViewId = ResUtil.getViewId(when (AppVersionUtil.getVersionCode()) {
                     Constrant.WX_CODE_8_0_69 -> "kbq" 
                     else -> "kbq" 
@@ -306,58 +362,6 @@ class HideMainUIListPluginPart : IPlugin {
                 }
                 val dotViewId = ResUtil.getViewId(small_red)
                 val dotTv: View? = if (dotViewId != 0) itemView.findViewById(dotViewId) else null
-                
-                // ===== 核心复用恢复逻辑 =====
-                // 如果当前行不是我们要隐藏的行（或者原本隐藏但现在滚到了正常好友）
-                if (realWxid == null) {
-                    val lp = itemView.layoutParams
-                    if (lp != null && lp.height == 0) {
-                        // 解除隐藏，恢复正常的显示
-                        itemView.visibility = View.VISIBLE
-                        lp.height = -2 // 恢复成 WRAP_CONTENT
-                        lp.width = -1  // 恢复成 MATCH_PARENT
-                        itemView.layoutParams = lp
-                        if (itemView is ViewGroup) {
-                            for (i in 0 until itemView.childCount) itemView.getChildAt(i).visibility = View.VISIBLE
-                        }
-                        itemView.setOnClickListener(null)
-                    }
-                    // 解除底层拦截
-                    if (nameTv != null) nameViewMap.remove(nameTv)
-                    if (msgTv != null) msgViewMap.remove(msgTv)
-                    if (tipTv != null) unreadViewMap.remove(tipTv)
-                    if (dotTv != null) unreadViewMap.remove(dotTv)
-                    return
-                }
-
-                // ================= 处理目标对象 =================
-                // 立刻把底层 ID 还回去，维持长按删除、滑动标记等原生功能的稳定性
-                XposedHelpers2.setObjectField(itemData, "field_username", realWxid)
-
-                val maskBean = WXMaskPlugin.getMaskBeamById(realWxid)
-                val isCompletelyHide = maskBean?.mapId == "hide_completely"
-
-                // 【真正无痕迹的完全隐藏：零像素坍缩】
-                if (isCompletelyHide) {
-                    itemView.visibility = View.GONE
-                    val hideParams = itemView.layoutParams ?: AbsListView.LayoutParams(-1, -2)
-                    hideParams.height = 0  // 高度设为0！拒绝灰边！
-                    hideParams.width = 0
-                    itemView.layoutParams = hideParams
-                    itemView.setPadding(0, 0, 0, 0)
-                    
-                    // 彻底隐身所有的内部组件，不留一点边界碰撞
-                    if (itemView is ViewGroup) {
-                        for (i in 0 until itemView.childCount) itemView.getChildAt(i).visibility = View.GONE
-                    }
-                    itemView.setBackgroundColor(0x00000000)
-                    itemView.setOnClickListener(null)
-                    
-                    // 因为整行都没了，清除掉文字拦截器防内存泄漏
-                    if (nameTv != null) nameViewMap.remove(nameTv)
-                    if (msgTv != null) msgViewMap.remove(msgTv)
-                    return 
-                }
 
                 // 【解决闪烁：注入底层拦截器】
                 if (maskBean != null && nameTv != null) {
