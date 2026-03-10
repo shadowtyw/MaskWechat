@@ -18,6 +18,7 @@ import com.lu.wxmask.MainHook
 import com.lu.wxmask.plugin.WXMaskPlugin
 import com.lu.wxmask.util.AppVersionUtil
 import com.lu.wxmask.util.ConfigUtil
+import com.lu.wxmask.util.ext.getViewId  // <-- 就是漏了这一行
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
