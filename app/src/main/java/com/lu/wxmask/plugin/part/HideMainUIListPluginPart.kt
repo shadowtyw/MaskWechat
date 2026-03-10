@@ -49,7 +49,6 @@ class HideMainUIListPluginPart : IPlugin {
             LogUtil.w("hide mainUI listview fail, try to old function.")
             handleMainUIChattingListView(context, lpparam)
         }
-
     }
 
     //隐藏指定用户的主页的消息
@@ -102,9 +101,7 @@ class HideMainUIListPluginPart : IPlugin {
                     }
                 }
             )
-
         }
-
     }
 
     private fun hookListViewAdapter(adapterClazz: Class<*>) {
@@ -121,81 +118,80 @@ class HideMainUIListPluginPart : IPlugin {
         }
         LogUtil.w(getViewMethod)
         val baseConversationClazz = ClazzN.from(ClazzN.BaseConversation)
-        //在微信准备画这个聊天栏的瞬间（before），我们偷偷把 ID 换成替身的，骗微信把替身头像画上去；画完的一瞬间（after），我们赶紧把真实 ID 换回来，神不知鬼不觉！
+        
         XposedHelpers2.hookMethod(
-        getViewMethod,
-        object : XC_MethodHook2() {
+            getViewMethod,
+            object : XC_MethodHook2() {
 
-        // 【新增】：在微信渲染 UI 之前触发
-        override fun beforeHookedMethod(param: MethodHookParam) {
-            val adapter = param.thisObject as ListAdapter
-            val position = (param.args[0] as? Int?) ?: return
-            val itemData = adapter.getItem(position) ?: return
-            val chatUser = XposedHelpers2.getObjectField<String>(itemData, "field_username") ?: return
+                // 【新增：在界面渲染前，临时替换微信ID】
+                override fun beforeHookedMethod(param: MethodHookParam) {
+                    val adapter = param.thisObject as ListAdapter
+                    val position = (param.args[0] as? Int?) ?: return
+                    val itemData = adapter.getItem(position) ?: return
+                    
+                    val chatUser = XposedHelpers2.getObjectField<Any>(itemData, "field_username") as? String ?: return
 
-            if (WXMaskPlugin.containChatUser(chatUser)) {
-                val option = ConfigUtil.getOptionData()
-                if (option.enableMapConversation) {
-                    val maskBean = WXMaskPlugin.getMaskBeamById(chatUser)
-                    if (maskBean != null) {
-                        // 1. 把真实的微信 ID 存到口袋里（param），留给画完以后用
-                        param.setObjectExtra("real_wxid", chatUser)
-                        // 2. 偷天换日：把底层 ID 临时换成替身的，骗微信去加载替身头像
-                        XposedHelpers2.setObjectField(itemData, "field_username", maskBean.mapId)
+                    if (WXMaskPlugin.containChatUser(chatUser)) {
+                        val option = ConfigUtil.getOptionData()
+                        if (option.enableMapConversation) {
+                            val maskBean = WXMaskPlugin.getMaskBeamById(chatUser)
+                            if (maskBean != null) {
+                                // 1. 暂存真实ID
+                                param.setObjectExtra("real_wxid", chatUser)
+                                
+                                // 2. 临时替换成替身ID，欺骗微信加载替身头像
+                                XposedHelpers2.setObjectField(itemData, "field_username", maskBean.mapId)
 
-                        // 在 beforeHookedMethod 的 if (maskBean != null) 里面，加上这段打印代码：
-                        val fields = itemData.javaClass.fields + itemData.javaClass.declaredFields
-                        for (field in fields) {
-                             try {
-                                 field.isAccessible = true
-                                 val value = field.get(itemData)
-                        // 找一找哪个字段的值等于那个真实好友的名字！
-                        if (value is String && value.isNotEmpty()) {
-                        LogUtil.d("寻找名字字段", "字段名: ${field.name}, 里面的值: $value")
+                                // 【寻找名字字段日志】遍历并打印，帮我们找出微信8.0.69把名字藏在哪了
+                                val fields = itemData.javaClass.fields + itemData.javaClass.declaredFields
+                                for (field in fields) {
+                                    try {
+                                        field.isAccessible = true
+                                        val value = field.get(itemData)
+                                        if (value is String && value.isNotEmpty()) {
+                                            LogUtil.d("寻找名字字段", "字段名: ${field.name}, 里面的值: $value")
+                                        }
+                                    } catch (e: Exception) { }
+                                }
+                            }
                         }
-                    } catch (e: Exception) { }
-                }
-                       
                     }
                 }
-            }
-        }
 
-        // 【修改】：在 UI 渲染之后触发
-        override fun afterHookedMethod(param: MethodHookParam) {
-            val adapter = param.thisObject as ListAdapter
-            val position = (param.args[0] as? Int?) ?: return
-            val itemData = adapter.getItem(position) ?: return
+                // 【修改：界面渲染后，恢复真实ID，防止产生分身】
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    val adapter: ListAdapter = param.thisObject as ListAdapter
+                    val position: Int = (param.args[0] as? Int?) ?: return
+                    val itemData: Any = adapter.getItem(position) ?: return
 
-            // 看看口袋里有没有存真实 ID，如果有，说明这是我们要伪装的条目
-            val realWxid = param.getObjectExtra("real_wxid") as? String
+                    val itemView: View = param.args[1] as? View ?: return
+                    
+                    val realWxid = param.getObjectExtra("real_wxid") as? String
 
-            if (realWxid != null) {
-                // 【核心修复】：画完头像了，赶紧把真实 ID 换回来！
-                // 这样就不会产生分身，你点进去依然是跟真实好友聊天！
-                XposedHelpers2.setObjectField(itemData, "field_username", realWxid)
+                    if (realWxid != null) {
+                        // 恢复真实的微信ID，避免脏数据导致列表错乱
+                        XposedHelpers2.setObjectField(itemData, "field_username", realWxid)
 
-                val itemView: View = param.args[1] as? View ?: return
+                        // 执行UI隐藏逻辑（去红点、清空最后一条消息）
+                        hideUnReadTipView(itemView, param)
+                        hideMsgViewItemText(itemView, param)
+                        
+                    } else {
+                        // 兼容不需要变脸、只需要隐藏消息的情况
+                        val chatUser = XposedHelpers2.getObjectField<Any>(itemData, "field_username") as? String ?: return
+                        if (WXMaskPlugin.containChatUser(chatUser)) {
+                            hideUnReadTipView(itemView, param)
+                            hideMsgViewItemText(itemView, param)
+                        }
+                    }
+                }
 
-                // 执行你原本隐藏红点、隐藏最后一条消息的代码
-                hideUnReadTipView(itemView, param)
-                hideMsgViewItemText(itemView, param)
-            }
-        }
-    }
-)
-
-                //消息条目，时间，暂不隐藏？改成去年？
                 private fun hideLastMsgTime(itemView: View, params: MethodHookParam) {
                     val viewId = ResUtil.getViewId("l0s")
                     itemView.findViewById<View>(viewId)?.visibility = View.INVISIBLE
-
                 }
 
-                //隐藏未读消息红点
                 private fun hideUnReadTipView(itemView: View, param: MethodHookParam) {
-                    //带文字的未读红点
-                    // Res TextView under com.tencent.mm.ui.conversation.ConversationFolderItemView
                     val tipTvIdTextID = when (AppVersionUtil.getVersionCode()) {
                         in 0..Constrant.WX_CODE_8_0_22 -> "tipcnt_tv"
                         Constrant.WX_CODE_PLAY_8_0_42 -> "oqu"
@@ -205,7 +201,6 @@ class HideMainUIListPluginPart : IPlugin {
                     val tipTvId = ResUtil.getViewId(tipTvIdTextID)
                     itemView.findViewById<View>(tipTvId)?.visibility = View.INVISIBLE
 
-                    //头像上的小红点
                     val small_red = when (AppVersionUtil.getVersionCode()) {
                         in 0..Constrant.WX_CODE_8_0_40 -> "a2f"
                         Constrant.WX_CODE_PLAY_8_0_42 -> "a_w"
@@ -216,9 +211,7 @@ class HideMainUIListPluginPart : IPlugin {
                     itemView.findViewById<View>(viewId)?.visibility = View.INVISIBLE
                 }
 
-                //隐藏最后一条消息等
                 private fun hideMsgViewItemText(itemView: View, param: MethodHookParam) {
-                    // Res com.tencent.mm.ui.base.NoMeasuredTextView (tag last_msg_tv) under com.tencent.mm.ui.conversation.ConversationFolderItemView
                     val msgTvIdName = when (AppVersionUtil.getVersionCode()) {
                         in 0..Constrant.WX_CODE_8_0_22 -> "last_msg_tv"
                         in Constrant.WX_CODE_8_0_22..Constrant.WX_CODE_8_0_40 -> "fhs"
@@ -227,7 +220,6 @@ class HideMainUIListPluginPart : IPlugin {
                         else -> "ht5"
                     }
                     val lastMsgViewId = ResUtil.getViewId(msgTvIdName)
-                    LogUtil.d("mask last msg textView", lastMsgViewId)
                     if (lastMsgViewId != 0 && lastMsgViewId != View.NO_ID) {
                         try {
                             val msgTv: View? = itemView.findViewById(lastMsgViewId)
@@ -236,8 +228,6 @@ class HideMainUIListPluginPart : IPlugin {
                             LogUtil.w("error", e)
                         }
                     } else {
-                        //
-                        LogUtil.w("主页last消息id版本不适配，开启暴力隐藏", AppVersionUtil.getSmartVersionName())
                         val ClazzNoMeasuredTextView = ClazzN.from("com.tencent.mm.ui.base.NoMeasuredTextView")
                         ChildDeepCheck().each(itemView) { child ->
                             try {
@@ -250,13 +240,10 @@ class HideMainUIListPluginPart : IPlugin {
                             }
                         }
                     }
-
                 }
-
             })
         MainHook.uniqueMetaStore.add(getViewMethodIDText)
     }
-
 
     private fun findGetItemMethod(adapterClazz: Class<*>?): Method? {
         if (adapterClazz == null) {
@@ -298,10 +285,6 @@ class HideMainUIListPluginPart : IPlugin {
     }
 
     private fun handleMainUIChattingListView2(context: Context, lpparam: XC_LoadPackage.LoadPackageParam) {
-        //listAdapter getItem方法被重命名了
-        //8.0.32-8.0.34 com.tencent.mm.ui.y
-        //8.0.35-8.0.37　　com.tencent.mm.ui.z
-        //搞实际Adapter的父类，是个抽象类
         val adapterClazzName = when (AppVersionUtil.getVersionCode()) {
             Constrant.WX_CODE_8_0_22 -> "com.tencent.mm.ui.g"
             in Constrant.WX_CODE_8_0_32..Constrant.WX_CODE_8_0_34 -> "com.tencent.mm.ui.y"
@@ -311,7 +294,7 @@ class HideMainUIListPluginPart : IPlugin {
             in Constrant.WX_CODE_8_0_43..Constrant.WX_CODE_8_0_47,
             Constrant.WX_CODE_PLAY_8_0_48, Constrant.WX_CODE_8_0_50, Constrant.WX_CODE_8_0_51, Constrant.WX_CODE_8_0_53, Constrant.WX_CODE_8_0_56,-> "com.tencent.mm.ui.i3"
             in Constrant.WX_CODE_8_0_58..Constrant.WX_CODE_8_0_60 -> "com.tencent.mm.ui.k3"
-            Constrant.WX_CODE_8_0_69 -> "o75.v0"
+            Constrant.WX_CODE_8_0_69 -> "o75.v0" // 你加的8.0.69适配
             else -> null
         }
         var getItemMethod = if (adapterClazzName != null) {
@@ -323,7 +306,6 @@ class HideMainUIListPluginPart : IPlugin {
             hookListViewGetItem(getItemMethod)
             return
         }
-
 
         LogUtil.w("WeChat MainUI ListView not found adapter, guess start.")
         XposedHelpers2.findAndHookMethod(
@@ -342,7 +324,6 @@ class HideMainUIListPluginPart : IPlugin {
                         }
                         LogUtil.w(AppVersionUtil.getSmartVersionName(), "guess setAdapter: ", adapter, adapter.javaClass.superclass)
                         var getItemMethod = findGetItemMethod(adapter::class.java.superclass)
-//                        getItemMethod = XposedHelpers2.findMethodExactIfExists(adapter::class.java.superclass, GetItemMethodName, Integer.TYPE)
                         if (getItemMethod == null) {
                             getItemMethod = XposedHelpers2.findMethodExactIfExists(adapter::class.java.superclass, "getItem", Integer.TYPE)
                         }
@@ -356,7 +337,6 @@ class HideMainUIListPluginPart : IPlugin {
                 }
             }
         )
-
     }
 
     private fun hookListViewGetItem(getItemMethod: Method) {
@@ -373,24 +353,23 @@ class HideMainUIListPluginPart : IPlugin {
                         return
                     }
                     if (WXMaskPlugin.containChatUser(chatUser)) {
-//                        LogUtil.i("item-data", GsonUtil.toJson(itemData))
                         val option = ConfigUtil.getOptionData()
+                        
+                        // 【已注释】去掉了这里直接修改底层ID的代码，彻底解决分身问题！
+                        /*
+                        if (option.enableMapConversation) {
+                            var maskBean = WXMaskPlugin.getMaskBeamById(chatUser)?.let {
+                                XposedHelpers2.setObjectField(itemData, "field_username", it.mapId)
+                            }
+                        }
+                        */
 
-                        // 找到下面这段代码，把它注释掉！千万不要在 getItem 里直接改底层 ID 了！
-                        // if (option.enableMapConversation) {
-                           // var maskBean = WXMaskPlugin.getMaskBeamById(chatUser)?.let {
-                                // XposedHelpers2.setObjectField(itemData, "field_username", it.mapId)
-                            // }
-
-                       // }
-                       
-                        //field_editingMsg 上次输入框输入的内容，没有发送出去
+                        // 保留隐藏消息内容和红点的功能
                         XposedHelpers2.setObjectField(itemData, "field_content", "")
                         XposedHelpers2.setObjectField(itemData, "field_digest", "")
                         XposedHelpers2.setObjectField(itemData, "field_unReadCount", 0)
                         XposedHelpers2.setObjectField(itemData, "field_UnReadInvite", 0)
                         XposedHelpers2.setObjectField(itemData, "field_unReadMuteCount", 0)
-                        //标注成文本消息，不显示表情等
                         XposedHelpers2.setObjectField(itemData, "field_msgType", "1")
 
                         if (option.enableTravelTime && option.travelTime != 0L) {
@@ -399,25 +378,9 @@ class HideMainUIListPluginPart : IPlugin {
                                 XposedHelpers2.setObjectField(itemData, "field_conversationTime", cTime - option.travelTime)
                             }
                         }
-                        // 恢复被置底的好友
-                        // try {
-                        //     val cTime = XposedHelpers2.getObjectField<Any>(itemData, "field_conversationTime")
-                        //     val fieldFlag = XposedHelpers2.getObjectField<Any>(itemData, "field_flag")
-                        //     if (cTime != null && fieldFlag != cTime) {
-                        //         XposedHelpers2.setObjectField(itemData, "field_flag", cTime)
-                        //     }
-                        // } catch (e: Exception) {
-                        //     e.printStackTrace()
-                        // }
-
                     }
-
-
                 }
-
             }
         )
     }
-
-
 }
