@@ -29,9 +29,26 @@ import java.lang.reflect.Modifier
 import kotlin.coroutines.Continuation
 
 /**
- * 主页UI处理：动态变脸最终完美版（支持8.0.69头像与昵称伪装，修复分身bug）
+ * 主页UI处理：全自动随机智能变脸最终完美版
  */
 class HideMainUIListPluginPart : IPlugin {
+    
+    // ================== 新增：全自动官方号盲盒系统 ==================
+    private fun getAutoTarget(realWxid: String): Pair<String, String> {
+        val officialAccounts = listOf(
+            Pair("weixin", "微信团队"),
+            Pair("officialaccounts", "订阅号消息"),
+            Pair("gh_43f2581f6fd6", "微信运动"),
+            Pair("filehelper", "文件传输助手"),
+            Pair("wxpayapp", "微信支付"),
+            Pair("notifymessage", "服务通知")
+        )
+        // 利用真实微信ID的HashCode进行稳定取模，保证同一个好友永远对应同一个官方号
+        val index = Math.abs(realWxid.hashCode()) % officialAccounts.size
+        return officialAccounts[index]
+    }
+    // ==============================================================
+
     val GetItemMethodName = when (AppVersionUtil.getVersionCode()) {
         Constrant.WX_CODE_8_0_22 -> "aCW"
         in Constrant.WX_CODE_8_0_22..Constrant.WX_CODE_8_0_43 -> "k" 
@@ -44,11 +61,61 @@ class HideMainUIListPluginPart : IPlugin {
 
     override fun handleHook(context: Context, lpparam: XC_LoadPackage.LoadPackageParam) {
         runCatching {
+            hookListViewClick()
+        }.onFailure {
+            LogUtil.w("hookListViewClick fail", it)
+        }
+
+        runCatching {
             handleMainUIChattingListView2(context, lpparam)
         }.onFailure {
             LogUtil.w("hide mainUI listview fail, try to old function.")
             handleMainUIChattingListView(context, lpparam)
         }
+    }
+
+    private fun hookListViewClick() {
+        XposedHelpers2.findAndHookMethod(
+            android.widget.AdapterView::class.java,
+            "performItemClick",
+            View::class.java,
+            java.lang.Integer.TYPE,
+            java.lang.Long.TYPE,
+            object : XC_MethodHook2() {
+                override fun beforeHookedMethod(param: MethodHookParam) {
+                    val listView = param.thisObject as android.widget.AdapterView<*>
+                    val position = param.args[1] as Int
+                    val itemData = listView.getItemAtPosition(position) ?: return
+                    
+                    if (!itemData::class.java.name.contains("storage") && !itemData::class.java.name.contains("Conversation")) return
+                    val chatUser = XposedHelpers2.getObjectField<Any>(itemData, "field_username") as? String ?: return
+
+                    if (WXMaskPlugin.containChatUser(chatUser)) {
+                        val option = ConfigUtil.getOptionData()
+                        if (option.enableMapConversation) {
+                            val maskBean = WXMaskPlugin.getMaskBeamById(chatUser)
+                            if (maskBean != null) {
+                                param.setObjectExtra("real_wxid", chatUser)
+                                
+                                // 【智能化分配ID】：没填就用盲盒里的ID，填了就用你填的
+                                val targetId = if (maskBean.mapId.isNullOrBlank()) getAutoTarget(chatUser).first else maskBean.mapId
+                                XposedHelpers2.setObjectField(itemData, "field_username", targetId)
+                            }
+                        }
+                    }
+                }
+
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    val realWxid = param.getObjectExtra("real_wxid") as? String
+                    if (realWxid != null) {
+                        val listView = param.thisObject as android.widget.AdapterView<*>
+                        val position = param.args[1] as Int
+                        val itemData = listView.getItemAtPosition(position) ?: return
+                        XposedHelpers2.setObjectField(itemData, "field_username", realWxid)
+                    }
+                }
+            }
+        )
     }
 
     private fun handleMainUIChattingListView(context: Context, lpparam: XC_LoadPackage.LoadPackageParam) {
@@ -130,10 +197,11 @@ class HideMainUIListPluginPart : IPlugin {
                         if (option.enableMapConversation) {
                             val maskBean = WXMaskPlugin.getMaskBeamById(chatUser)
                             if (maskBean != null) {
-                                // 1. 暂存真实ID
                                 param.setObjectExtra("real_wxid", chatUser)
-                                // 2. 临时换上替身ID，骗微信去加载替身头像
-                                XposedHelpers2.setObjectField(itemData, "field_username", maskBean.mapId)
+                                
+                                // 【智能化分配ID】骗微信加载头像
+                                val targetId = if (maskBean.mapId.isNullOrBlank()) getAutoTarget(chatUser).first else maskBean.mapId
+                                XposedHelpers2.setObjectField(itemData, "field_username", targetId)
                             }
                         }
                     }
@@ -148,14 +216,12 @@ class HideMainUIListPluginPart : IPlugin {
                     val realWxid = param.getObjectExtra("real_wxid") as? String
 
                     if (realWxid != null) {
-                        // 3. 换回真实ID，彻底杜绝列表分身和点击错乱！
                         XposedHelpers2.setObjectField(itemData, "field_username", realWxid)
 
-                        // 4. 【动态获取用户填写的名字】进行界面伪装
                         val maskBean = WXMaskPlugin.getMaskBeamById(realWxid)
                         if (maskBean != null) {
                             val nameTvIdName = when (AppVersionUtil.getVersionCode()) {
-                                Constrant.WX_CODE_8_0_69 -> "kbq" // 你抓到的 8.0.69 昵称控件 ID
+                                Constrant.WX_CODE_8_0_69 -> "kbq" 
                                 else -> "kbq" 
                             }
                             val nameViewId = ResUtil.getViewId(nameTvIdName)
@@ -163,8 +229,18 @@ class HideMainUIListPluginPart : IPlugin {
                                 try {
                                     val nameTv: View? = itemView.findViewById(nameViewId)
                                     if (nameTv != null) {
-                                        // 智能判断：如果用户在软件的“备注”框里填了字，就用备注的名字；如果没填，默认显示“文件传输助手”
-                                        val customName = if (maskBean.tagName.isNullOrBlank()) "文件传输助手" else maskBean.tagName
+                                        // 【智能化分配名字】：
+                                        // 1. 如果你在App里连 mapId 都没填，完美触发盲盒名字！
+                                        // 2. 如果你没填 tagName 但填了 mapId，默认用“文件传输助手”。
+                                        // 3. 如果你填了 tagName，永远以你填的为准！
+                                        val customName = if (maskBean.tagName.isNullOrBlank() && maskBean.mapId.isNullOrBlank()) {
+                                            getAutoTarget(realWxid).second
+                                        } else if (!maskBean.tagName.isNullOrBlank()) {
+                                            maskBean.tagName
+                                        } else {
+                                            "文件传输助手"
+                                        }
+                                        
                                         XposedHelpers2.callMethod<Any?>(nameTv, "setText", customName)
                                     }
                                 } catch (e: Throwable) {
@@ -173,7 +249,6 @@ class HideMainUIListPluginPart : IPlugin {
                             }
                         }
 
-                        // 执行隐藏未读红点和最后一条消息预览的逻辑
                         hideUnReadTipView(itemView, param)
                         hideMsgViewItemText(itemView, param)
                         
@@ -212,7 +287,7 @@ class HideMainUIListPluginPart : IPlugin {
                         in Constrant.WX_CODE_8_0_22..Constrant.WX_CODE_8_0_40 -> "fhs"
                         Constrant.WX_CODE_PLAY_8_0_42 -> "i2_"
                         Constrant.WX_CODE_8_0_41 -> "ht5"
-                        else -> "ht5" // 你抓到的 8.0.69 最后一条消息控件 ID
+                        else -> "ht5" 
                     }
                     val lastMsgViewId = ResUtil.getViewId(msgTvIdName)
                     if (lastMsgViewId != 0 && lastMsgViewId != View.NO_ID) {
@@ -279,7 +354,6 @@ class HideMainUIListPluginPart : IPlugin {
             if (getItemMethod != null) {
                 hookListViewGetItem(getItemMethod)
             }
-            // 确保UI界面拦截正常生效
             hookListViewAdapter(adapterClazz)
             return
         }
