@@ -96,13 +96,26 @@ class HideMainUIListPluginPart : IPlugin {
     }
 
     private fun hookListViewAdapter(adapterClazz: Class<*>) {
-        val getViewMethod: Method = XposedHelpers2.findMethodExactIfExists(
-            adapterClazz,
-            "getView",
-            java.lang.Integer.TYPE,
-            View::class.java,
-            ViewGroup::class.java
-        ) ?: return
+        // 【关键修复】深度寻找 getView 方法，防止微信把它藏在父类里导致找不到
+        var getViewMethod: Method? = null
+        var currentClass: Class<*>? = adapterClazz
+        while (currentClass != null && currentClass != Any::class.java) {
+            getViewMethod = XposedHelpers2.findMethodExactIfExists(
+                currentClass,
+                "getView",
+                java.lang.Integer.TYPE,
+                View::class.java,
+                ViewGroup::class.java
+            )
+            if (getViewMethod != null) break
+            currentClass = currentClass.superclass
+        }
+
+        if (getViewMethod == null) {
+            de.robv.android.xposed.XposedBridge.log("【UI雷达】严重错误：在 ${adapterClazz.name} 及其父类中找不到 getView 方法！")
+            return
+        }
+
         val getViewMethodIDText = getViewMethod.toString()
         if (MainHook.uniqueMetaStore.contains(getViewMethodIDText)) return
         
@@ -110,7 +123,6 @@ class HideMainUIListPluginPart : IPlugin {
             getViewMethod,
             object : XC_MethodHook2() {
 
-                // 用于控制全屏雷达只打印一次，防止日志刷屏卡死手机
                 var hasPrintedRadar = false
 
                 override fun beforeHookedMethod(param: MethodHookParam) {
@@ -137,9 +149,9 @@ class HideMainUIListPluginPart : IPlugin {
                     val itemData: Any = adapter.getItem(position) ?: return
                     val itemView: View = param.args[1] as? View ?: return
                     
-                    // 【全屏无差别UI雷达】不加任何限制，只要有界面就直接开扫！
+                    // 【全屏无差别UI雷达】
                     if (!hasPrintedRadar) {
-                        de.robv.android.xposed.XposedBridge.log("【全屏UI雷达】已启动！开始暴力扫描任意聊天框...")
+                        de.robv.android.xposed.XposedBridge.log("【全屏UI雷达】已启动！开始暴力扫描控件...")
                         ChildDeepCheck().each(itemView) { child ->
                             try {
                                 val text = XposedHelpers2.callMethod<Any?>(child, "getText")
@@ -152,12 +164,11 @@ class HideMainUIListPluginPart : IPlugin {
                                         }
                                     } catch (e: Exception) { }
                                     
-                                    // 打印屏幕上看到的所有文字和它们的ID！
                                     de.robv.android.xposed.XposedBridge.log("【全屏UI雷达】-> 资源ID名: $idName ---> 文字内容: $text")
                                 }
                             } catch (e: Throwable) { }
                         }
-                        hasPrintedRadar = true // 扫一次就够了，不然日志太多
+                        hasPrintedRadar = true
                     }
 
                     val realWxid = param.getObjectExtra("real_wxid") as? String
@@ -263,12 +274,21 @@ class HideMainUIListPluginPart : IPlugin {
             Constrant.WX_CODE_8_0_69 -> "o75.v0" 
             else -> null
         }
-        var getItemMethod = if (adapterClazzName != null) {
-            findGetItemMethod(ClazzN.from(adapterClazzName))
-        } else null
         
-        if (getItemMethod != null) {
-            hookListViewGetItem(getItemMethod)
+        var adapterClazz = if (adapterClazzName != null) ClazzN.from(adapterClazzName) else null
+
+        if (adapterClazz != null) {
+            var getItemMethod = findGetItemMethod(adapterClazz)
+            if (getItemMethod != null) {
+                hookListViewGetItem(getItemMethod)
+            }
+            
+            // 【史诗级修复】！！！
+            // 之前的代码在这里找到了 o75.v0 就直接 return 退出了！
+            // 导致根本没去执行下面的 hookListViewAdapter，也就没去拦截界面。
+            // 现在强制让它去拦截界面！
+            hookListViewAdapter(adapterClazz)
+            
             return
         }
 
