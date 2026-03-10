@@ -141,18 +141,6 @@ class HideMainUIListPluginPart : IPlugin {
                                 
                                 // 2. 临时替换成替身ID，欺骗微信加载替身头像
                                 XposedHelpers2.setObjectField(itemData, "field_username", maskBean.mapId)
-
-                                // 【寻找名字字段日志】遍历并打印，帮我们找出微信8.0.69把名字藏在哪了
-                                val fields = itemData.javaClass.fields + itemData.javaClass.declaredFields
-                                for (field in fields) {
-                                    try {
-                                        field.isAccessible = true
-                                        val value = field.get(itemData)
-                                        if (value is String && value.isNotEmpty()) {
-                                            LogUtil.d("寻找名字字段", "字段名: ${field.name}, 里面的值: $value")
-                                        }
-                                    } catch (e: Exception) { }
-                                }
                             }
                         }
                     }
@@ -169,7 +157,7 @@ class HideMainUIListPluginPart : IPlugin {
                     val realWxid = param.getObjectExtra("real_wxid") as? String
 
                     if (realWxid != null) {
-                        // 恢复真实的微信ID，避免脏数据导致列表错乱
+                        // 恢复真实的微信ID，避免脏数据导致列表错乱和分身
                         XposedHelpers2.setObjectField(itemData, "field_username", realWxid)
 
                         // 执行UI隐藏逻辑（去红点、清空最后一条消息）
@@ -294,7 +282,7 @@ class HideMainUIListPluginPart : IPlugin {
             in Constrant.WX_CODE_8_0_43..Constrant.WX_CODE_8_0_47,
             Constrant.WX_CODE_PLAY_8_0_48, Constrant.WX_CODE_8_0_50, Constrant.WX_CODE_8_0_51, Constrant.WX_CODE_8_0_53, Constrant.WX_CODE_8_0_56,-> "com.tencent.mm.ui.i3"
             in Constrant.WX_CODE_8_0_58..Constrant.WX_CODE_8_0_60 -> "com.tencent.mm.ui.k3"
-            Constrant.WX_CODE_8_0_69 -> "o75.v0" // 你加的8.0.69适配
+            Constrant.WX_CODE_8_0_69 -> "o75.v0" // 这里保留了你加入的8.0.69适配
             else -> null
         }
         var getItemMethod = if (adapterClazzName != null) {
@@ -349,22 +337,26 @@ class HideMainUIListPluginPart : IPlugin {
                     val itemData: Any = param.result ?: return
                     val chatUser: String? = XposedHelpers2.getObjectField(itemData, "field_username")
                     if (chatUser == null) {
-                        LogUtil.w("chat user is null")
                         return
                     }
                     if (WXMaskPlugin.containChatUser(chatUser)) {
-                        val option = ConfigUtil.getOptionData()
                         
-                        // 【已注释】去掉了这里直接修改底层ID的代码，彻底解决分身问题！
-                        /*
-                        if (option.enableMapConversation) {
-                            var maskBean = WXMaskPlugin.getMaskBeamById(chatUser)?.let {
-                                XposedHelpers2.setObjectField(itemData, "field_username", it.mapId)
-                            }
+                        // 【终极扫描雷达开启！】
+                        // 直接把底层数据里所有的字符串扒光打印出来
+                        val fields = itemData.javaClass.fields + itemData.javaClass.declaredFields
+                        for (field in fields) {
+                            try {
+                                field.isAccessible = true
+                                val value = field.get(itemData)
+                                if (value is String && value.isNotEmpty()) {
+                                    // 用 .w 警告级别打印，保证绝对能在日志里显示出来
+                                    LogUtil.w("【终极雷达】字段名: ${field.name} ---> 里面的值: $value")
+                                }
+                            } catch (e: Exception) { }
                         }
-                        */
 
-                        // 保留隐藏消息内容和红点的功能
+                        // 下面保留清理消息和红点的功能，原先导致分身的代码已被移除
+                        val option = ConfigUtil.getOptionData()
                         XposedHelpers2.setObjectField(itemData, "field_content", "")
                         XposedHelpers2.setObjectField(itemData, "field_digest", "")
                         XposedHelpers2.setObjectField(itemData, "field_unReadCount", 0)
