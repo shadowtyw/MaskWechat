@@ -29,25 +29,28 @@ import java.lang.reflect.Modifier
 import kotlin.coroutines.Continuation
 
 /**
- * 主页UI处理：全自动随机智能变脸最终完美版
+ * 主页UI处理：毕业级终极智能版
  */
 class HideMainUIListPluginPart : IPlugin {
     
-    // ================== 新增：全自动官方号盲盒系统 ==================
+    // ================== 智能官方号全套字典 ==================
+    private val officialAccountDict = mapOf(
+        "weixin" to "微信团队",
+        "officialaccounts" to "订阅号消息",
+        "gh_43f2581f6fd6" to "微信运动",
+        "filehelper" to "文件传输助手",
+        "wxpayapp" to "微信支付",
+        "notifymessage" to "服务通知"
+    )
+
+    // 全自动盲盒分配系统
     private fun getAutoTarget(realWxid: String): Pair<String, String> {
-        val officialAccounts = listOf(
-            Pair("weixin", "微信团队"),
-            Pair("officialaccounts", "订阅号消息"),
-            Pair("gh_43f2581f6fd6", "微信运动"),
-            Pair("filehelper", "文件传输助手"),
-            Pair("wxpayapp", "微信支付"),
-            Pair("notifymessage", "服务通知")
-        )
-        // 利用真实微信ID的HashCode进行稳定取模，保证同一个好友永远对应同一个官方号
-        val index = Math.abs(realWxid.hashCode()) % officialAccounts.size
-        return officialAccounts[index]
+        val keys = officialAccountDict.keys.toList()
+        val index = Math.abs(realWxid.hashCode()) % keys.size
+        val targetId = keys[index]
+        return Pair(targetId, officialAccountDict[targetId]!!)
     }
-    // ==============================================================
+    // =========================================================
 
     val GetItemMethodName = when (AppVersionUtil.getVersionCode()) {
         Constrant.WX_CODE_8_0_22 -> "aCW"
@@ -96,8 +99,7 @@ class HideMainUIListPluginPart : IPlugin {
                             val maskBean = WXMaskPlugin.getMaskBeamById(chatUser)
                             if (maskBean != null) {
                                 param.setObjectExtra("real_wxid", chatUser)
-                                
-                                // 【智能化分配ID】：没填就用盲盒里的ID，填了就用你填的
+                                // 智能取ID：填了用填的，没填用盲盒的
                                 val targetId = if (maskBean.mapId.isNullOrBlank()) getAutoTarget(chatUser).first else maskBean.mapId
                                 XposedHelpers2.setObjectField(itemData, "field_username", targetId)
                             }
@@ -198,8 +200,6 @@ class HideMainUIListPluginPart : IPlugin {
                             val maskBean = WXMaskPlugin.getMaskBeamById(chatUser)
                             if (maskBean != null) {
                                 param.setObjectExtra("real_wxid", chatUser)
-                                
-                                // 【智能化分配ID】骗微信加载头像
                                 val targetId = if (maskBean.mapId.isNullOrBlank()) getAutoTarget(chatUser).first else maskBean.mapId
                                 XposedHelpers2.setObjectField(itemData, "field_username", targetId)
                             }
@@ -229,18 +229,17 @@ class HideMainUIListPluginPart : IPlugin {
                                 try {
                                     val nameTv: View? = itemView.findViewById(nameViewId)
                                     if (nameTv != null) {
-                                        // 【智能化分配名字】：
-                                        // 1. 如果你在App里连 mapId 都没填，完美触发盲盒名字！
-                                        // 2. 如果你没填 tagName 但填了 mapId，默认用“文件传输助手”。
-                                        // 3. 如果你填了 tagName，永远以你填的为准！
-                                        val customName = if (maskBean.tagName.isNullOrBlank() && maskBean.mapId.isNullOrBlank()) {
-                                            getAutoTarget(realWxid).second
-                                        } else if (!maskBean.tagName.isNullOrBlank()) {
+                                        // 【智能名称判断核心】：
+                                        val customName = if (!maskBean.tagName.isNullOrBlank()) {
+                                            // 1. 如果你手填了备注，优先级最高，绝对服从
                                             maskBean.tagName
+                                        } else if (!maskBean.mapId.isNullOrBlank()) {
+                                            // 2. 如果你只填了变脸ID（没填备注），自动查字典补全名字
+                                            officialAccountDict[maskBean.mapId] ?: "未知联系人"
                                         } else {
-                                            "文件传输助手"
+                                            // 3. 啥都没填，全自动盲盒分配
+                                            getAutoTarget(realWxid).second
                                         }
-                                        
                                         XposedHelpers2.callMethod<Any?>(nameTv, "setText", customName)
                                     }
                                 } catch (e: Throwable) {
