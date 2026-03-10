@@ -29,12 +29,12 @@ import java.lang.reflect.Modifier
 import kotlin.coroutines.Continuation
 
 /**
- * 主页UI（即微信底部“微信”Tab选中时所在页面）处理，消息、小红点相关逻辑
+ * 主页UI处理
  */
 class HideMainUIListPluginPart : IPlugin {
     val GetItemMethodName = when (AppVersionUtil.getVersionCode()) {
         Constrant.WX_CODE_8_0_22 -> "aCW"
-        in Constrant.WX_CODE_8_0_22..Constrant.WX_CODE_8_0_43 -> "k" // WX_CODE_PLAY_8_0_42 matches
+        in Constrant.WX_CODE_8_0_22..Constrant.WX_CODE_8_0_43 -> "k" 
         Constrant.WX_CODE_PLAY_8_0_48 -> "l"
         Constrant.WX_CODE_8_0_49, Constrant.WX_CODE_8_0_51,  Constrant.WX_CODE_8_0_56 -> "l"
         Constrant.WX_CODE_8_0_50 -> "n"
@@ -61,9 +61,8 @@ class HideMainUIListPluginPart : IPlugin {
                     "com.tencent.mm.ui.conversation.p"
                 }
             }
-
             Constrant.WX_CODE_8_0_35 -> "com.tencent.mm.ui.conversation.r"
-            in Constrant.WX_CODE_8_0_35..Constrant.WX_CODE_8_0_41 -> "com.tencent.mm.ui.conversation.x" // WX_CODE_PLAY_8_0_42 matches
+            in Constrant.WX_CODE_8_0_35..Constrant.WX_CODE_8_0_41 -> "com.tencent.mm.ui.conversation.x" 
             Constrant.WX_CODE_8_0_47 -> "com.tencent.mm.ui.conversation.p3"
             Constrant.WX_CODE_8_0_50 -> "com.tencent.mm.ui.conversation.q3"
             else -> null
@@ -81,9 +80,7 @@ class HideMainUIListPluginPart : IPlugin {
                 "setAdapter",
                 ListAdapter::class.java
             )
-            if (setAdapterMethod == null) {
-                return
-            }
+            if (setAdapterMethod == null) return
             XposedHelpers2.hookMethod(
                 setAdapterMethod,
                 object : XC_MethodHook2() {
@@ -107,19 +104,19 @@ class HideMainUIListPluginPart : IPlugin {
             ViewGroup::class.java
         ) ?: return
         val getViewMethodIDText = getViewMethod.toString()
-        if (MainHook.uniqueMetaStore.contains(getViewMethodIDText)) {
-            return
-        }
+        if (MainHook.uniqueMetaStore.contains(getViewMethodIDText)) return
         
         XposedHelpers2.hookMethod(
             getViewMethod,
             object : XC_MethodHook2() {
 
+                // 用于控制全屏雷达只打印一次，防止日志刷屏卡死手机
+                var hasPrintedRadar = false
+
                 override fun beforeHookedMethod(param: MethodHookParam) {
                     val adapter = param.thisObject as ListAdapter
                     val position = (param.args[0] as? Int?) ?: return
                     val itemData = adapter.getItem(position) ?: return
-                    
                     val chatUser = XposedHelpers2.getObjectField<Any>(itemData, "field_username") as? String ?: return
 
                     if (WXMaskPlugin.containChatUser(chatUser)) {
@@ -127,7 +124,6 @@ class HideMainUIListPluginPart : IPlugin {
                         if (option.enableMapConversation) {
                             val maskBean = WXMaskPlugin.getMaskBeamById(chatUser)
                             if (maskBean != null) {
-                                // 暂存真实ID，临时换上替身ID骗微信加载头像
                                 param.setObjectExtra("real_wxid", chatUser)
                                 XposedHelpers2.setObjectField(itemData, "field_username", maskBean.mapId)
                             }
@@ -139,17 +135,11 @@ class HideMainUIListPluginPart : IPlugin {
                     val adapter: ListAdapter = param.thisObject as ListAdapter
                     val position: Int = (param.args[0] as? Int?) ?: return
                     val itemData: Any = adapter.getItem(position) ?: return
-
                     val itemView: View = param.args[1] as? View ?: return
                     
-                    val realWxid = param.getObjectExtra("real_wxid") as? String
-
-                    if (realWxid != null) {
-                        // 换回真实ID，防止分身
-                        XposedHelpers2.setObjectField(itemData, "field_username", realWxid)
-
-                        // 【UI 界面透视雷达】开始扫描界面文字
-                        de.robv.android.xposed.XposedBridge.log("【UI雷达】扫描到伪装目标，开始透视屏幕控件...")
+                    // 【全屏无差别UI雷达】不加任何限制，只要有界面就直接开扫！
+                    if (!hasPrintedRadar) {
+                        de.robv.android.xposed.XposedBridge.log("【全屏UI雷达】已启动！开始暴力扫描任意聊天框...")
                         ChildDeepCheck().each(itemView) { child ->
                             try {
                                 val text = XposedHelpers2.callMethod<Any?>(child, "getText")
@@ -161,11 +151,20 @@ class HideMainUIListPluginPart : IPlugin {
                                             idName = child.context.resources.getResourceEntryName(id)
                                         }
                                     } catch (e: Exception) { }
-                                    // 打印出每一个文字控件的名称和内容
-                                    de.robv.android.xposed.XposedBridge.log("【UI雷达】控件探测 -> 资源ID名: $idName ---> 屏幕上显示的文字: $text")
+                                    
+                                    // 打印屏幕上看到的所有文字和它们的ID！
+                                    de.robv.android.xposed.XposedBridge.log("【全屏UI雷达】-> 资源ID名: $idName ---> 文字内容: $text")
                                 }
                             } catch (e: Throwable) { }
                         }
+                        hasPrintedRadar = true // 扫一次就够了，不然日志太多
+                    }
+
+                    val realWxid = param.getObjectExtra("real_wxid") as? String
+
+                    if (realWxid != null) {
+                        // 换回真实ID
+                        XposedHelpers2.setObjectField(itemData, "field_username", realWxid)
 
                         hideUnReadTipView(itemView, param)
                         hideMsgViewItemText(itemView, param)
@@ -212,8 +211,7 @@ class HideMainUIListPluginPart : IPlugin {
                         try {
                             val msgTv: View? = itemView.findViewById(lastMsgViewId)
                             XposedHelpers2.callMethod<Any?>(msgTv, "setText", "")
-                        } catch (e: Throwable) {
-                        }
+                        } catch (e: Throwable) {}
                     } else {
                         val ClazzNoMeasuredTextView = ClazzN.from("com.tencent.mm.ui.base.NoMeasuredTextView")
                         ChildDeepCheck().each(itemView) { child ->
@@ -223,8 +221,7 @@ class HideMainUIListPluginPart : IPlugin {
                                 ) {
                                     XposedHelpers2.callMethod<String?>(child, "setText", "")
                                 }
-                            } catch (e: Throwable) {
-                            }
+                            } catch (e: Throwable) {}
                         }
                     }
                 }
@@ -233,30 +230,16 @@ class HideMainUIListPluginPart : IPlugin {
     }
 
     private fun findGetItemMethod(adapterClazz: Class<*>?): Method? {
-        if (adapterClazz == null) {
-            return null
-        }
+        if (adapterClazz == null) return null
         var method: Method? = XposedHelpers2.findMethodExactIfExists(adapterClazz, GetItemMethodName, Integer.TYPE)
-        if (method != null) {
-            return method
-        }
+        if (method != null) return method
+        
         var methods = XposedHelpers2.findMethodsByExactPredicate(adapterClazz) { m ->
             val ret = !arrayOf(
-                Object::class.java,
-                String::class.java,
-                Byte::class.java,
-                Short::class.java,
-                Long::class.java,
-                Float::class.java,
-                Double::class.java,
-                String::class.java,
-                java.lang.Byte.TYPE,
-                java.lang.Short.TYPE,
-                java.lang.Integer.TYPE,
-                java.lang.Long.TYPE,
-                java.lang.Float.TYPE,
-                java.lang.Double.TYPE,
-                java.lang.Void.TYPE
+                Object::class.java, String::class.java, Byte::class.java, Short::class.java,
+                Long::class.java, Float::class.java, Double::class.java, java.lang.Byte.TYPE,
+                java.lang.Short.TYPE, java.lang.Integer.TYPE, java.lang.Long.TYPE,
+                java.lang.Float.TYPE, java.lang.Double.TYPE, java.lang.Void.TYPE
             ).contains(m.returnType)
             val paramVail = m.parameterTypes.size == 1 && m.parameterTypes[0] == Integer.TYPE
             return@findMethodsByExactPredicate paramVail && ret && Modifier.isPublic(m.modifiers) && !Modifier.isAbstract(m.modifiers)
@@ -272,19 +255,18 @@ class HideMainUIListPluginPart : IPlugin {
             Constrant.WX_CODE_8_0_22 -> "com.tencent.mm.ui.g"
             in Constrant.WX_CODE_8_0_32..Constrant.WX_CODE_8_0_34 -> "com.tencent.mm.ui.y"
             in Constrant.WX_CODE_8_0_35..Constrant.WX_CODE_8_0_38 -> "com.tencent.mm.ui.z"
-            in Constrant.WX_CODE_8_0_40..Constrant.WX_CODE_8_0_43 -> "com.tencent.mm.ui.b0" // WX_CODE_PLAY_8_0_42 matches
+            in Constrant.WX_CODE_8_0_40..Constrant.WX_CODE_8_0_43 -> "com.tencent.mm.ui.b0"
             in Constrant.WX_CODE_8_0_43..Constrant.WX_CODE_8_0_44 -> "com.tencent.mm.ui.h3"
             in Constrant.WX_CODE_8_0_43..Constrant.WX_CODE_8_0_47,
             Constrant.WX_CODE_PLAY_8_0_48, Constrant.WX_CODE_8_0_50, Constrant.WX_CODE_8_0_51, Constrant.WX_CODE_8_0_53, Constrant.WX_CODE_8_0_56,-> "com.tencent.mm.ui.i3"
             in Constrant.WX_CODE_8_0_58..Constrant.WX_CODE_8_0_60 -> "com.tencent.mm.ui.k3"
-            Constrant.WX_CODE_8_0_69 -> "o75.v0" // 你加的8.0.69适配
+            Constrant.WX_CODE_8_0_69 -> "o75.v0" 
             else -> null
         }
         var getItemMethod = if (adapterClazzName != null) {
             findGetItemMethod(ClazzN.from(adapterClazzName))
-        } else {
-            null
-        }
+        } else null
+        
         if (getItemMethod != null) {
             hookListViewGetItem(getItemMethod)
             return
@@ -296,7 +278,6 @@ class HideMainUIListPluginPart : IPlugin {
             ListAdapter::class.java,
             object : XC_MethodHook2() {
                 private var isHookGetItemMethod = false
-
                 override fun afterHookedMethod(param: MethodHookParam) {
                     val adapter = param.args[0] ?: return
                     if (adapter::class.java.name.startsWith("com.tencent.mm.ui.conversation")) {
@@ -325,7 +306,6 @@ class HideMainUIListPluginPart : IPlugin {
                     if (chatUser == null) return
 
                     if (WXMaskPlugin.containChatUser(chatUser)) {
-                        // 清理红点和消息记录等基础逻辑
                         val option = ConfigUtil.getOptionData()
                         XposedHelpers2.setObjectField(itemData, "field_content", "")
                         XposedHelpers2.setObjectField(itemData, "field_digest", "")
