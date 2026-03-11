@@ -38,12 +38,43 @@ class HideMainUIListPluginPart : IPlugin {
         val msgViewMap = WeakHashMap<View, CharSequence>()
         val unreadViewMap = WeakHashMap<View, Boolean>()
         
-        // 新增：用于缓存原始视图属性，防止复用污染
+        // 【终极修复】：缓存原生的 UI 和 点击事件，防止被永久破坏
         val originalPaddingMap = WeakHashMap<View, IntArray>()
         val originalBgMap = WeakHashMap<View, Drawable?>()
+        val originalClickMap = WeakHashMap<View, View.OnClickListener?>()
+        val originalClickableMap = WeakHashMap<View, Boolean>()
         
         var isInterceptorHooked = false
         private val mainHandler = Handler(Looper.getMainLooper())
+    }
+
+    // 自定义点击事件类，用于识别是否是我们自己的假事件
+    class MaskClickListener(val targetId: String, val context: Context) : View.OnClickListener {
+        override fun onClick(v: View?) {
+            try {
+                val intent = Intent()
+                intent.setClassName(context, "com.tencent.mm.ui.chatting.ChattingUI")
+                intent.putExtra("Chat_User", targetId)
+                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                context.startActivity(intent)
+            } catch (e: Throwable) {
+                LogUtil.w("点击拦截跳转失败", e)
+            }
+        }
+    }
+
+    // 利用反射获取 View 当前绑定的原生点击事件
+    private fun getOnClickListener(view: View): View.OnClickListener? {
+        try {
+            val getListenerInfo = View::class.java.getDeclaredMethod("getListenerInfo")
+            getListenerInfo.isAccessible = true
+            val listenerInfo = getListenerInfo.invoke(view) ?: return null
+            val mOnClickListener = listenerInfo.javaClass.getDeclaredField("mOnClickListener")
+            mOnClickListener.isAccessible = true
+            return mOnClickListener.get(listenerInfo) as? View.OnClickListener
+        } catch (e: Throwable) {
+            return null
+        }
     }
 
     private fun getAutoTarget(realWxid: String): Pair<String, String> {
@@ -283,6 +314,13 @@ class HideMainUIListPluginPart : IPlugin {
 
                 if (param.hasThrowable()) return
                 val itemView: View = param.result as? View ?: return 
+                
+                // ===== 【事件缓存】在进行任何破坏性操作前，记录原装点击事件 ====
+                val currentListener = getOnClickListener(itemView)
+                if (currentListener !is MaskClickListener && !originalClickMap.containsKey(itemView)) {
+                    originalClickMap[itemView] = currentListener
+                    originalClickableMap[itemView] = itemView.isClickable
+                }
 
                 // ===== 处理非隐藏对象（普通好友或被复用的 View） =====
                 if (realWxid == null) {
@@ -298,20 +336,20 @@ class HideMainUIListPluginPart : IPlugin {
                         }
                     }
                     
-                    // 【精细修复】：完美还原被压扁的 UI 属性（Padding 和 背景）
+                    // 【精细修复】：完美还原原生 UI 属性（消除无灰线后遗症）
                     if (originalPaddingMap.containsKey(itemView)) {
                         val p = originalPaddingMap[itemView]!!
                         itemView.setPadding(p[0], p[1], p[2], p[3])
-                        originalPaddingMap.remove(itemView)
                     }
                     if (originalBgMap.containsKey(itemView)) {
                         itemView.background = originalBgMap[itemView]
-                        originalBgMap.remove(itemView)
                     }
                     
-                    // 彻底清除残留的点击劫持事件
-                    itemView.setOnClickListener(null)
-                    itemView.isClickable = false
+                    // 【精细修复】：将原装点击事件还给普通好友
+                    if (originalClickMap.containsKey(itemView)) {
+                        itemView.setOnClickListener(originalClickMap[itemView])
+                        itemView.isClickable = originalClickableMap[itemView] ?: true
+                    }
 
                     cleanRecycledViewHooks(itemView)
                     return
@@ -332,7 +370,7 @@ class HideMainUIListPluginPart : IPlugin {
                         for (i in 0 until itemView.childCount) itemView.getChildAt(i).visibility = View.GONE
                     }
                     
-                    // 【精细修复】：隐藏前缓存原生的 UI 属性
+                    // 隐藏前缓存原生属性
                     if (!originalPaddingMap.containsKey(itemView)) {
                         originalPaddingMap[itemView] = intArrayOf(itemView.paddingLeft, itemView.paddingTop, itemView.paddingRight, itemView.paddingBottom)
                     }
@@ -343,6 +381,7 @@ class HideMainUIListPluginPart : IPlugin {
                     itemView.setBackgroundColor(0x00000000)
                     itemView.setPadding(0, 0, 0, 0)
                     
+                    // 屏蔽完全隐藏项的点击事件
                     itemView.setOnClickListener(null)
                     itemView.isClickable = false
                     
@@ -428,19 +467,9 @@ class HideMainUIListPluginPart : IPlugin {
                     dotTv.visibility = View.INVISIBLE
                 }
 
-                // 注入我们篡改过的点击事件
-                itemView.setOnClickListener {
-                    try {
-                        val targetId = if (maskBean?.mapId.isNullOrBlank()) getAutoTarget(realWxid).first else maskBean!!.mapId
-                        val intent = Intent()
-                        intent.setClassName(itemView.context, "com.tencent.mm.ui.chatting.ChattingUI")
-                        intent.putExtra("Chat_User", targetId)
-                        intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                        itemView.context.startActivity(intent)
-                    } catch (e: Throwable) {
-                        LogUtil.w("点击拦截跳转失败", e)
-                    }
-                }
+                // 注入我们的变脸点击事件
+                val targetId = if (maskBean?.mapId.isNullOrBlank()) getAutoTarget(realWxid).first else maskBean!!.mapId
+                itemView.setOnClickListener(MaskClickListener(targetId, itemView.context))
             }
         })
         MainHook.uniqueMetaStore.add(getViewMethodIDText)
