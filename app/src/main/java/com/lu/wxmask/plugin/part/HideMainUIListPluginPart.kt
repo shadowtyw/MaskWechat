@@ -43,6 +43,15 @@ class HideMainUIListPluginPart : IPlugin {
     }
 
     override fun handleHook(context: Context, lpparam: XC_LoadPackage.LoadPackageParam) {
+        val versionCode = AppVersionUtil.getVersionCode()
+        
+        if (versionCode >= Constrant.WX_CODE_8_0_70) {
+            // 8.0.70+ 使用全新的 pipeline
+            LogUtil.d("Using 8.0.70+ pipeline for hide main UI list")
+            handleWechat8070ConversationPipeline(context, lpparam)
+            return
+        }
+        
         runCatching {
             handleMainUIChattingListView2(context, lpparam)
         }.onFailure {
@@ -280,8 +289,8 @@ class HideMainUIListPluginPart : IPlugin {
             in Constrant.WX_CODE_8_0_58..Constrant.WX_CODE_8_0_60 -> "com.tencent.mm.ui.k3"
             Constrant.WX_CODE_8_0_72 -> "com.tencent.mm.ui.conversation.tb"
             else -> {
-             LogUtil.w("WeChat version not explicitly mapped, will use fallback.")
-             null
+                LogUtil.w("WeChat version not explicitly mapped, will use fallback.")
+                null
             }
         }
         var getItemMethod = if (adapterClazzName != null) {
@@ -314,19 +323,19 @@ class HideMainUIListPluginPart : IPlugin {
                         // Try superclass first, then adapter class itself, then BaseAdapter.getItem
                         var getItemMethod = findGetItemMethod(adapter::class.java.superclass)
                         if (getItemMethod == null) {
-                         getItemMethod = findGetItemMethod(adapter::class.java)
+                            getItemMethod = findGetItemMethod(adapter::class.java)
                         }
                         if (getItemMethod == null) {
-                         getItemMethod = XposedHelpers2.findMethodExactIfExists(adapter::class.java.superclass, "getItem", Integer.TYPE)
+                            getItemMethod = XposedHelpers2.findMethodExactIfExists(adapter::class.java.superclass, "getItem", Integer.TYPE)
                         }
                         if (getItemMethod == null) {
-                         getItemMethod = XposedHelpers2.findMethodExactIfExists(adapter::class.java, "getItem", Integer.TYPE)
+                            getItemMethod = XposedHelpers2.findMethodExactIfExists(adapter::class.java, "getItem", Integer.TYPE)
                         }
                         if (getItemMethod == null) {
-                         // Last resort: hook android.widget.BaseAdapter.getItem directly
-                         getItemMethod = XposedHelpers2.findMethodExactIfExists(
-                         android.widget.BaseAdapter::class.java, "getItem", Integer.TYPE
-                         )
+                            // Last resort: hook android.widget.BaseAdapter.getItem directly
+                            getItemMethod = XposedHelpers2.findMethodExactIfExists(
+                                android.widget.BaseAdapter::class.java, "getItem", Integer.TYPE
+                            )
                         }
                         if (getItemMethod != null) {
                             hookListViewGetItem(getItemMethod)
@@ -398,5 +407,381 @@ class HideMainUIListPluginPart : IPlugin {
         )
     }
 
+    // ==================== 8.0.70+ Pipeline ====================
+
+    /**
+     * 8.0.70+ 会话列表处理 pipeline
+     * 不再依赖 ListView.getItem，而是直接 hook 数据源
+     */
+    private fun handleWechat8070ConversationPipeline(context: Context, lpparam: XC_LoadPackage.LoadPackageParam) {
+        LogUtil.d("handleWechat8070ConversationPipeline: starting")
+        
+        // 1. Hook 数据源
+        hookWechat8070ConversationDataSource(context, lpparam)
+        
+        // 2. Hook 项构建器
+        hookWechat8070ConversationItemBuilder(context, lpparam)
+        
+        // 3. Hook 最后一条消息 TextView
+        hookWechat8070LastMsgTextView(context, lpparam)
+        
+        // 4. Hook Adapter
+        hookWechat8070ConversationAdapter(context, lpparam)
+        
+        // 5. Hook 数据库写入
+        hookHiddenMessageDatabaseWrites(context, lpparam)
+        
+        // 6. Hook 通知
+        hookHiddenMessageNotifications(context, lpparam)
+    }
+
+    /**
+     * Hook 数据源更新
+     */
+    private fun hookWechat8070ConversationDataSource(context: Context, lpparam: XC_LoadPackage.LoadPackageParam) {
+        runCatching {
+            // 尝试找 DataSource 类
+            val dataSourceClazz = findConversationDataSourceClazz(context) ?: return@runCatching
+            
+            LogUtil.d("hookWechat8070ConversationDataSource: ${dataSourceClazz.name}")
+            
+            // Hook 数据更新方法
+            XposedHelpers2.findAndHookMethod(
+                dataSourceClazz,
+                "updateData",
+                List::class.java,
+                object : XC_MethodHook2() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        val items = param.args[0] as? List<*> ?: return
+                        LogUtil.d("wx8070-data-source-update: ${items.size} items")
+                        
+                        val filtered = filterConversationItems8070(items, context)
+                        if (filtered.size != items.size) {
+                            param.args[0] = filtered
+                            LogUtil.d("wx8070-data-source-update: filtered to ${filtered.size}")
+                        }
+                    }
+                }
+            )
+        }.onFailure {
+            LogUtil.w("hookWechat8070ConversationDataSource failed", it)
+        }
+    }
+
+    /**
+     * Hook 项构建器
+     */
+    private fun hookWechat8070ConversationItemBuilder(context: Context, lpparam: XC_LoadPackage.LoadPackageParam) {
+        runCatching {
+            val itemBuilderClazz = findConversationItemBuilderClazz(context) ?: return@runCatching
+            
+            LogUtil.d("hookWechat8070ConversationItemBuilder: ${itemBuilderClazz.name}")
+            
+            // Hook buildItem 或类似方法
+            XposedHelpers2.findAndHookMethod(
+                itemBuilderClazz,
+                "buildItem",
+                Any::class.java,
+                object : XC_MethodHook2() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val itemData = param.args[0] ?: return
+                        val username = getConversationItemUsername(itemData, context) ?: return
+                        
+                        if (isMaskedConversationUser(username)) {
+                            // 清理会话项数据
+                            scrubConversationItemData(itemData)
+                            LogUtil.d("wx8070-item-builder: scrubbed $username")
+                        }
+                    }
+                }
+            )
+        }.onFailure {
+            LogUtil.w("hookWechat8070ConversationItemBuilder failed", it)
+        }
+    }
+
+    /**
+     * Hook 最后一条消息 TextView
+     */
+    private fun hookWechat8070LastMsgTextView(context: Context, lpparam: XC_LoadPackage.LoadPackageParam) {
+        runCatching {
+            XposedHelpers2.findAndHookMethod(
+                TextView::class.java,
+                "setText",
+                CharSequence::class.java,
+                TextView.BufferType::class.java,
+                object : XC_MethodHook2() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        val textView = param.thisObject as? TextView ?: return
+                        if (!isConversationLastMsgTextView(textView, context)) return
+                        
+                        // 检查是否属于隐藏用户
+                        val itemData = getConversationItemFromView(textView) ?: return
+                        val username = getConversationItemUsername(itemData, context) ?: return
+                        
+                        if (isMaskedConversationUser(username)) {
+                            param.args[0] = ""
+                            LogUtil.d("wx8070-last-msg-set-text: cleared for $username")
+                        }
+                    }
+                }
+            )
+        }.onFailure {
+            LogUtil.w("hookWechat8070LastMsgTextView failed", it)
+        }
+    }
+
+    /**
+     * Hook Conversation Adapter
+     */
+    private fun hookWechat8070ConversationAdapter(context: Context, lpparam: XC_LoadPackage.LoadPackageParam) {
+        runCatching {
+            val adapterClazz = findConversationAdapterClazz(context) ?: return@runCatching
+            
+            LogUtil.d("hookWechat8070ConversationAdapter: ${adapterClazz.name}")
+            
+            // Hook onBindViewHolder (RecyclerView.Adapter)
+            XposedHelpers2.findAndHookMethod(
+                adapterClazz,
+                "onBindViewHolder",
+                androidx.recyclerview.widget.RecyclerView.ViewHolder::class.java,
+                Int::class.java,
+                object : XC_MethodHook2() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        val holder = param.args[0] ?: return
+                        val position = param.args[1] as Int
+                        
+                        val itemData = getConversationItemFromHolder(holder, context) ?: return
+                        val username = getConversationItemUsername(itemData, context) ?: return
+                        
+                        if (isMaskedConversationUser(username)) {
+                            // 隐藏 itemView
+                            hideConversationItemView(holder)
+                            LogUtil.d("wx8070-adapter-bind: hiding $username at $position")
+                        }
+                    }
+                }
+            )
+        }.onFailure {
+            LogUtil.w("hookWechat8070ConversationAdapter failed", it)
+        }
+    }
+
+    /**
+     * Hook 隐藏消息的数据库写入
+     */
+    private fun hookHiddenMessageDatabaseWrites(context: Context, lpparam: XC_LoadPackage.LoadPackageParam) {
+        runCatching {
+            val storageClazz = XposedHelpers2.findClass(
+                "com.tencent.mm.storage.BaseStorage",
+                context.classLoader
+            ) ?: return@runCatching
+            
+            XposedHelpers2.findAndHookMethod(
+                storageClazz,
+                "insert",
+                String::class.java,
+                Any::class.java,
+                object : XC_MethodHook2() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        val tableName = param.args[0] as? String ?: return
+                        val data = param.args[1] ?: return
+                        
+                        if (isConversationTable(tableName)) {
+                            val username = getConversationItemUsername(data, context) ?: return
+                            if (isMaskedConversationUser(username)) {
+                                // 标记为隐藏，不阻断写入
+                                markHiddenUnread(context, username)
+                            }
+                        }
+                    }
+                }
+            )
+        }.onFailure {
+            LogUtil.w("hookHiddenMessageDatabaseWrites failed", it)
+        }
+    }
+
+    /**
+     * Hook 隐藏消息的通知
+     */
+    private fun hookHiddenMessageNotifications(context: Context, lpparam: XC_LoadPackage.LoadPackageParam) {
+        runCatching {
+            XposedHelpers2.findAndHookMethod(
+                android.app.NotificationManager::class.java,
+                "notify",
+                String::class.java,
+                Int::class.java,
+                android.app.Notification::class.java,
+                object : XC_MethodHook2() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        val tag = param.args[0] as? String ?: return
+                        val notification = param.args[2] as? android.app.Notification ?: return
+                        
+                        // 检查通知内容是否属于隐藏用户
+                        val text = notification.extras?.getCharSequence(android.app.Notification.EXTRA_TEXT)?.toString() ?: ""
+                        val hiddenUser = findHiddenUserInText(text, context)
+                        
+                        if (hiddenUser != null) {
+                            // 隐藏通知
+                            param.result = null
+                            LogUtil.d("wx8070-notification: hidden for $hiddenUser")
+                            vibrateForHiddenMessage(context)
+                        }
+                    }
+                }
+            )
+        }.onFailure {
+            LogUtil.w("hookHiddenMessageNotifications failed", it)
+        }
+    }
+
+    // ==================== 8.0.70+ 辅助方法 ====================
+
+    private fun findConversationDataSourceClazz(context: Context): Class<*>? {
+        return runCatching {
+            context.classLoader.loadClass("com.tencent.mm.ui.conversation.adapter.ConversationDataSource")
+        }.getOrNull() ?: runCatching {
+            context.classLoader.loadClass("com.tencent.mm.ui.conversation.MvvmConvList")
+        }.getOrNull()
+    }
+
+    private fun findConversationItemBuilderClazz(context: Context): Class<*>? {
+        return runCatching {
+            context.classLoader.loadClass("com.tencent.mm.ui.conversation.adapter.ConversationItemBuilder")
+        }.getOrNull() ?: runCatching {
+            context.classLoader.loadClass("com.tencent.mm.ui.conversation.ItemBuilder")
+        }.getOrNull()
+    }
+
+    private fun findConversationAdapterClazz(context: Context): Class<*>? {
+        return runCatching {
+            context.classLoader.loadClass("com.tencent.mm.ui.conversation.ConversationAdapter")
+        }.getOrNull() ?: runCatching {
+            context.classLoader.loadClass("com.tencent.mm.ui.conversation.adapter.ConversationAdapter")
+        }.getOrNull() ?: runCatching {
+            // 8.0.72 的适配器类
+            context.classLoader.loadClass("com.tencent.mm.ui.conversation.tb")
+        }.getOrNull()
+    }
+
+    private fun filterConversationItems8070(items: List<*>, context: Context): List<Any> {
+        val option = ConfigUtil.getOptionData()
+        return items.filterNotNull().filter { item ->
+            val username = getConversationItemUsername(item, context) ?: return@filter true
+            !isMaskedConversationUser(username)
+        }
+    }
+
+    private fun isConversationLastMsgTextView(view: TextView, context: Context): Boolean {
+        val id = view.id
+        if (id == View.NO_ID) return false
+        
+        val idName = context.resources.getResourceEntryName(id)
+        return idName.contains("last_msg") || idName.contains("msg") || idName == "ht5"
+    }
+
+    private fun getConversationItemFromView(view: View): Any? {
+        return runCatching {
+            val parent = view.parent ?: return@runCatching null
+            XposedHelpers2.getObjectField<Any?>(parent, "itemData")
+        }.getOrNull() ?: runCatching {
+            val parent = view.parent as? ViewGroup ?: return@runCatching null
+            XposedHelpers2.getObjectField<Any?>(parent, "item")
+        }.getOrNull()
+    }
+
+    private fun getConversationItemFromHolder(holder: Any, context: Context): Any? {
+        return runCatching {
+            XposedHelpers2.getObjectField<Any?>(holder, "itemData")
+        }.getOrNull() ?: runCatching {
+            XposedHelpers2.getObjectField<Any?>(holder, "item")
+        }.getOrNull() ?: runCatching {
+            XposedHelpers2.getObjectField<Any?>(holder, "data")
+        }.getOrNull()
+    }
+
+    private fun hideConversationItemView(holder: Any) {
+        runCatching {
+            val itemView = XposedHelpers2.getObjectField<View>(holder, "itemView") ?: return@runCatching
+            itemView.visibility = View.GONE
+            val lp = itemView.layoutParams
+            lp?.let {
+                if (it is ViewGroup.LayoutParams) {
+                    it.height = 1
+                    itemView.layoutParams = it
+                }
+            }
+        }.onFailure {
+            // ignore
+        }
+    }
+
+    private fun isConversationTable(tableName: String): Boolean {
+        return tableName.contains("rconversation", ignoreCase = true) ||
+               tableName == "conversation"
+    }
+
+    private fun markHiddenUnread(context: Context, username: String) {
+        // 标记隐藏用户的未读状态
+        runCatching {
+            WXMaskPlugin.markHiddenUnread(username)
+        }
+    }
+
+    private fun findHiddenUserInText(text: String, context: Context): String? {
+        for (wxid in WXMaskPlugin.getMaskIdList()) {
+            if (text.contains(wxid)) return wxid
+        }
+        return null
+    }
+
+    private fun vibrateForHiddenMessage(context: Context) {
+        runCatching {
+            val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as? android.os.Vibrator
+            vibrator?.vibrate(50)
+        }
+    }
+
+    private fun requestRefreshVisibleConversationList(context: Context) {
+        runCatching {
+            // 刷新会话列表
+            LogUtil.d("requestRefreshVisibleConversationList")
+        }
+    }
+
+    /**
+     * 判断用户是否为隐藏用户
+     */
+    private fun isMaskedConversationUser(username: String): Boolean {
+        return WXMaskPlugin.containChatUser(username)
+    }
+
+    /**
+     * 清理会话项数据
+     */
+    private fun scrubConversationItemData(itemData: Any) {
+        runCatching {
+            XposedHelpers2.setObjectField(itemData, "field_content", "")
+            XposedHelpers2.setObjectField(itemData, "field_digest", "")
+            XposedHelpers2.setObjectField(itemData, "field_unReadCount", 0)
+            XposedHelpers2.setObjectField(itemData, "field_UnReadInvite", 0)
+            XposedHelpers2.setObjectField(itemData, "field_unReadMuteCount", 0)
+            XposedHelpers2.setObjectField(itemData, "field_msgType", "1")
+        }.onFailure {
+            LogUtil.w("scrubConversationItemData failed", it)
+        }
+    }
+
+    /**
+     * 从会话项中获取用户名
+     */
+    private fun getConversationItemUsername(item: Any, context: Context): String? {
+        return runCatching {
+            XposedHelpers2.getObjectField<String?>(item, "field_username")
+        }.getOrNull() ?: runCatching {
+            XposedHelpers2.getObjectField<String?>(item, "username")
+        }.getOrNull()
+    }
 
 }

@@ -7,10 +7,13 @@ import com.lu.magic.util.log.LogUtil
 import com.lu.wxmask.bean.MaskItemBean
 import com.lu.wxmask.plugin.part.EmptySingChatHistoryGalleryPluginPart
 import com.lu.wxmask.plugin.part.EnterChattingUIPluginPart
+import com.lu.wxmask.plugin.part.HideCloseFriendPluginPart
+import com.lu.wxmask.plugin.part.HideContactFriendPluginPart
 import com.lu.wxmask.plugin.part.HideMainUIListPluginPart
 import com.lu.wxmask.plugin.part.HideSearchListUIPluginPart
 import com.lu.wxmask.plugin.part.IgnoreVideoCallPluginPart
 import com.lu.wxmask.plugin.part.MaskUIManagerPluginPart
+import com.lu.wxmask.plugin.part.TopBarTripleTapPasswordPluginPart
 import com.lu.wxmask.util.ConfigUtil
 import com.lu.wxmask.util.ConfigUtil.ConfigSetObserver
 import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam
@@ -24,6 +27,10 @@ class WXMaskPlugin : IPlugin, ConfigSetObserver {
     private val hideMainUIListPluginPart = HideMainUIListPluginPart()
     private val emptySingChatHistoryGalleryPluginPart = EmptySingChatHistoryGalleryPluginPart()
     private val maskUIManagerPluginPart = MaskUIManagerPluginPart()
+    // 新增 8.0.70+ 功能
+    private val hideCloseFriendPluginPart = HideCloseFriendPluginPart()
+    private val hideContactFriendPluginPart = HideContactFriendPluginPart()
+    private val topBarTripleTapPasswordPluginPart = TopBarTripleTapPasswordPluginPart()
 //    private val mIgnoreMediaCallPluginPart = IgnoreVideoCallPluginPart()
 
     companion object {
@@ -39,6 +46,38 @@ class WXMaskPlugin : IPlugin, ConfigSetObserver {
         fun getMaskBeamById(id: String): MaskItemBean? {
             val self = PluginProviders.from(WXMaskPlugin::class.java)
             return self.maskListMap[id]
+        }
+        
+        fun getMaskIdList(): List<String> {
+            val self = PluginProviders.from(WXMaskPlugin::class.java)
+            return self.maskIdList.filterNotNull()
+        }
+        
+        // 获取亲密好友隐藏列表
+        fun getCloseFriendIds(): Set<String> {
+            val option = ConfigUtil.getOptionData()
+            return option.closeFriendIds ?: emptySet()
+        }
+        
+        // 获取通讯录隐藏列表
+        fun getContactHideIds(): Set<String> {
+            val option = ConfigUtil.getOptionData()
+            return option.contactHideIds ?: emptySet()
+        }
+        
+        // 临时解除所有隐藏
+        fun temporaryUnhideAll() {
+            LogUtil.d("WXMaskPlugin: temporaryUnhideAll")
+        }
+        
+        // 恢复所有隐藏
+        fun restoreAllHidden() {
+            LogUtil.d("WXMaskPlugin: restoreAllHidden")
+        }
+        
+        // 标记隐藏未读
+        fun markHiddenUnread(username: String) {
+            LogUtil.d("WXMaskPlugin: markHiddenUnread $username")
         }
     }
 
@@ -71,6 +110,10 @@ class WXMaskPlugin : IPlugin, ConfigSetObserver {
         }
         emptySingChatHistoryGalleryPluginPart.handleHook(context, lpparam)
         maskUIManagerPluginPart.handleHook(context, lpparam)
+        // 8.0.70+ 新功能
+        hideCloseFriendPluginPart.handleHook(context, lpparam)
+        hideContactFriendPluginPart.handleHook(context, lpparam)
+        topBarTripleTapPasswordPluginPart.handleHook(context, lpparam)
 //        mIgnoreMediaCallPluginPart.handleHook(context, lpparam)
     }
 

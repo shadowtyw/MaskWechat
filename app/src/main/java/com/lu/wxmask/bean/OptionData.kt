@@ -13,6 +13,12 @@ class OptionData
  * @param travelTime 时间穿越（单位/毫秒）
  * @param enableTravelTime 是否启用时间穿越
  * @param enableChattingKey 聊天输入框口令监听
+ * @param hideCloseFriend 隐藏亲密好友（朋友圈）
+ * @param closeFriendIds 亲密好友ID列表
+ * @param hideContact 隐藏通讯录联系人
+ * @param contactHideIds 通讯录隐藏ID列表
+ * @param enableTripleTapPassword 启用三击密码
+ * @param tripleTapPassword 三击密码
  */
 private constructor(
     var hideMainSearch: Boolean,
@@ -22,7 +28,14 @@ private constructor(
     var viewWxDbPw: Boolean,
     var travelTime: Long,
     var enableTravelTime: Boolean,
-    var enableChattingKey: Boolean
+    var enableChattingKey: Boolean,
+    // 新增 8.0.70+ 功能字段
+    var hideCloseFriend: Boolean,
+    var closeFriendIds: Set<String>?,
+    var hideContact: Boolean,
+    var contactHideIds: Set<String>?,
+    var enableTripleTapPassword: Boolean,
+    var tripleTapPassword: String?
 ) {
 
 
@@ -41,7 +54,18 @@ private constructor(
                 viewWxDbPw = json.optBoolean("viewWxDbPw", false),
                 travelTime = json.optLong("travelTime", 0L),
                 enableTravelTime = json.optBoolean("enableTravelTime", false),
-                enableChattingKey = json.optBoolean("enableChattingKey", true)
+                enableChattingKey = json.optBoolean("enableChattingKey", true),
+                // 新增 8.0.70+ 功能字段
+                hideCloseFriend = json.optBoolean("hideCloseFriend", false),
+                closeFriendIds = json.optJSONArray("closeFriendIds")?.let { arr ->
+                    (0 until arr.length()).mapNotNull { arr.optString(it).takeIf { it.isNotBlank() } }.toSet()
+                },
+                hideContact = json.optBoolean("hideContact", false),
+                contactHideIds = json.optJSONArray("contactHideIds")?.let { arr ->
+                    (0 until arr.length()).mapNotNull { arr.optString(it).takeIf { it.isNotBlank() } }.toSet()
+                },
+                enableTripleTapPassword = json.optBoolean("enableTripleTapPassword", false),
+                tripleTapPassword = json.optString("tripleTapPassword").takeIf { it.isNotBlank() }
             )
         }
         fun toJson(data: OptionData): String {
@@ -54,6 +78,19 @@ private constructor(
                 put("travelTime", data.travelTime)
                 put("enableTravelTime", data.enableTravelTime)
                 put("enableChattingKey", data.enableChattingKey)
+                // 新增 8.0.70+ 功能字段
+                put("hideCloseFriend", data.hideCloseFriend)
+                data.closeFriendIds?.let {
+                    put("closeFriendIds", org.json.JSONArray(it))
+                }
+                put("hideContact", data.hideContact)
+                data.contactHideIds?.let {
+                    put("contactHideIds", org.json.JSONArray(it))
+                }
+                put("enableTripleTapPassword", data.enableTripleTapPassword)
+                data.tripleTapPassword?.let {
+                    put("tripleTapPassword", it)
+                }
             }.toString()
         }
 

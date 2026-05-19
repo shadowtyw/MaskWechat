@@ -71,6 +71,7 @@ class AppVersionUtil {
                 Constrant.WX_CODE_8_0_56,
                 Constrant.WX_CODE_8_0_58,
                 Constrant.WX_CODE_8_0_60,
+                Constrant.WX_CODE_8_0_70,
                 Constrant.WX_CODE_8_0_72
                     -> true
 
