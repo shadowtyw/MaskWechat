@@ -5,7 +5,6 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.BaseAdapter
 import android.widget.ListView
-import androidx.recyclerview.widget.RecyclerView
 import com.lu.lposed.api2.XC_MethodHook2
 import com.lu.lposed.api2.XposedHelpers2
 import com.lu.lposed.plugin.IPlugin
@@ -67,11 +66,14 @@ class HideContactFriendPluginPart : IPlugin {
     private fun hookMvvmAddressRecyclerAdapter(context: Context, lpparam: XC_LoadPackage.LoadPackageParam) {
         runCatching {
             val adapterClazz = findMvvmAddressAdapterClazz(context) ?: return@runCatching
+            val viewHolderClass = runCatching {
+                context.classLoader.loadClass("androidx.recyclerview.widget.RecyclerView\$ViewHolder")
+            }.getOrNull() ?: return@runCatching
             
             XposedHelpers2.findAndHookMethod(
                 adapterClazz,
                 "onBindViewHolder",
-                RecyclerView.ViewHolder::class.java,
+                viewHolderClass,
                 Int::class.java,
                 object : XC_MethodHook2() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
@@ -255,11 +257,14 @@ class HideContactFriendPluginPart : IPlugin {
                 "com.tencent.mm.view.recyclerview.WxRecyclerView",
                 context.classLoader
             ) ?: return@runCatching
+            val adapterClass = runCatching {
+                context.classLoader.loadClass("androidx.recyclerview.widget.RecyclerView\$Adapter")
+            }.getOrNull() ?: return@runCatching
             
             XposedHelpers2.findAndHookMethod(
                 recyclerViewClazz,
                 "setAdapter",
-                RecyclerView.Adapter::class.java,
+                adapterClass,
                 object : XC_MethodHook2() {
                     override fun afterHookedMethod(param: MethodHookParam) {
                         val adapter = param.args[0]
@@ -389,10 +394,10 @@ class HideContactFriendPluginPart : IPlugin {
     fun requestRefreshVisibleContactList(context: Context) {
         runCatching {
             addressAdapterRef?.let { adapter ->
-                if (adapter is RecyclerView.Adapter<*>) {
+                if (adapter is BaseAdapter) {
                     adapter.notifyDataSetChanged()
-                } else if (adapter is BaseAdapter) {
-                    adapter.notifyDataSetChanged()
+                } else {
+                    XposedHelpers2.callMethod(adapter, "notifyDataSetChanged")
                 }
             }
         }.onFailure {
@@ -405,11 +410,9 @@ class HideContactFriendPluginPart : IPlugin {
      */
     private fun refreshAddressListFromFragment(fragment: Any, context: Context) {
         runCatching {
-            val listView = findRecyclerViewFromObject(fragment, context)
-            listView?.let {
-                val adapter = it.adapter
-                adapter?.notifyDataSetChanged()
-            }
+            val recyclerView = findRecyclerViewFromObject(fragment, context) ?: return@runCatching
+            val adapter = XposedHelpers2.callMethod(recyclerView, "getAdapter") ?: return@runCatching
+            XposedHelpers2.callMethod(adapter, "notifyDataSetChanged")
         }.onFailure {
             LogUtil.w("refreshAddressListFromFragment failed", it)
         }
@@ -471,28 +474,34 @@ class HideContactFriendPluginPart : IPlugin {
         return WXMaskPlugin.getContactHideIds()
     }
 
-    private fun findRecyclerViewFromRootView(obj: Any, context: Context): RecyclerView? {
+    private fun findRecyclerViewFromRootView(obj: Any, context: Context): Any? {
         return runCatching {
             val view = XposedHelpers2.getObjectField<View>(obj, "mView") ?: return@runCatching null
             findRecyclerViewInTree(view)
         }.getOrNull()
     }
 
-    private fun findRecyclerViewFromObject(obj: Any, context: Context): RecyclerView? {
+    private fun findRecyclerViewFromObject(obj: Any, context: Context): Any? {
         return runCatching {
-            if (obj is RecyclerView) return obj
+            val recyclerViewClass = runCatching {
+                context.classLoader.loadClass("androidx.recyclerview.widget.RecyclerView")
+            }.getOrNull() ?: return@runCatching null
+            if (recyclerViewClass.isInstance(obj)) return obj
             val fields = obj::class.java.declaredFields
             for (field in fields) {
                 field.isAccessible = true
                 val value = field.get(obj) ?: continue
-                if (value is RecyclerView) return value
+                if (recyclerViewClass.isInstance(value)) return value
             }
             null
         }.getOrNull()
     }
 
-    private fun findRecyclerViewInTree(view: View): RecyclerView? {
-        if (view is RecyclerView) return view
+    private fun findRecyclerViewInTree(view: View): Any? {
+        val recyclerViewClass = runCatching {
+            view.context.classLoader.loadClass("androidx.recyclerview.widget.RecyclerView")
+        }.getOrNull() ?: return null
+        if (recyclerViewClass.isInstance(view)) return view
         if (view is ViewGroup) {
             for (i in 0 until view.childCount) {
                 val child = view.getChildAt(i)

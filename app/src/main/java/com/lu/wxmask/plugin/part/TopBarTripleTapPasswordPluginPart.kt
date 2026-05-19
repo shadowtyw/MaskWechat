@@ -25,6 +25,7 @@ import com.lu.wxmask.MainHook
 import com.lu.wxmask.plugin.WXMaskPlugin
 import com.lu.wxmask.util.AppVersionUtil
 import com.lu.wxmask.util.ConfigUtil
+import com.lu.wxmask.util.ext.getViewId
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.callbacks.XC_LoadPackage
 
@@ -288,7 +289,7 @@ class TopBarTripleTapPasswordPluginPart : IPlugin {
                 if (newPassword.isNotBlank()) {
                     val option = ConfigUtil.getOptionData()
                     option.tripleTapPassword = newPassword
-                    ConfigUtil.saveOptionData(option)
+                    ConfigUtil.setOptionData(option)
                     android.widget.Toast.makeText(context, "密码已设置", android.widget.Toast.LENGTH_SHORT).show()
                 } else {
                     android.widget.Toast.makeText(context, "密码不能为空", android.widget.Toast.LENGTH_SHORT).show()

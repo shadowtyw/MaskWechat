@@ -541,10 +541,17 @@ class HideMainUIListPluginPart : IPlugin {
             LogUtil.d("hookWechat8070ConversationAdapter: ${adapterClazz.name}")
             
             // Hook onBindViewHolder (RecyclerView.Adapter)
+            val viewHolderClass = runCatching {
+                context.classLoader.loadClass("androidx.recyclerview.widget.RecyclerView\$ViewHolder")
+            }.getOrNull()
+            if (viewHolderClass == null) {
+                LogUtil.w("hookWechat8070ConversationAdapter: ViewHolder class not found, skipping")
+                return@runCatching
+            }
             XposedHelpers2.findAndHookMethod(
                 adapterClazz,
                 "onBindViewHolder",
-                androidx.recyclerview.widget.RecyclerView.ViewHolder::class.java,
+                viewHolderClass,
                 Int::class.java,
                 object : XC_MethodHook2() {
                     override fun beforeHookedMethod(param: MethodHookParam) {

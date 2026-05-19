@@ -109,10 +109,17 @@ class HideCloseFriendPluginPart : IPlugin {
             // Adapter 类名
             val adapterClazz = findConversationAdapterClazz(context) ?: return@runCatching
             
+            val viewHolderClass = runCatching {
+                context.classLoader.loadClass("androidx.recyclerview.widget.RecyclerView\$ViewHolder")
+            }.getOrNull()
+            if (viewHolderClass == null) {
+                LogUtil.w("hookWechat8070ConversationAdapterBind: ViewHolder class not found")
+                return@runCatching
+            }
             XposedHelpers2.findAndHookMethod(
                 adapterClazz,
                 "onBindViewHolder",
-                androidx.recyclerview.widget.RecyclerView.ViewHolder::class.java,
+                viewHolderClass,
                 Int::class.java,
                 object : XC_MethodHook2() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
