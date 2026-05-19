@@ -278,7 +278,11 @@ class HideMainUIListPluginPart : IPlugin {
             in Constrant.WX_CODE_8_0_43..Constrant.WX_CODE_8_0_47,
             Constrant.WX_CODE_PLAY_8_0_48, Constrant.WX_CODE_8_0_50, Constrant.WX_CODE_8_0_51, Constrant.WX_CODE_8_0_53, Constrant.WX_CODE_8_0_56,-> "com.tencent.mm.ui.i3"
             in Constrant.WX_CODE_8_0_58..Constrant.WX_CODE_8_0_60 -> "com.tencent.mm.ui.k3"
-            else -> null
+            Constrant.WX_CODE_8_0_72 -> "com.tencent.mm.ui.conversation.tb"
+            else -> {
+             LogUtil.w("WeChat version not explicitly mapped, will use fallback.")
+             null
+            }
         }
         var getItemMethod = if (adapterClazzName != null) {
             findGetItemMethod(ClazzN.from(adapterClazzName))
@@ -307,10 +311,22 @@ class HideMainUIListPluginPart : IPlugin {
                             return
                         }
                         LogUtil.w(AppVersionUtil.getSmartVersionName(), "guess setAdapter: ", adapter, adapter.javaClass.superclass)
+                        // Try superclass first, then adapter class itself, then BaseAdapter.getItem
                         var getItemMethod = findGetItemMethod(adapter::class.java.superclass)
-//                        getItemMethod = XposedHelpers2.findMethodExactIfExists(adapter::class.java.superclass, GetItemMethodName, Integer.TYPE)
                         if (getItemMethod == null) {
-                            getItemMethod = XposedHelpers2.findMethodExactIfExists(adapter::class.java.superclass, "getItem", Integer.TYPE)
+                         getItemMethod = findGetItemMethod(adapter::class.java)
+                        }
+                        if (getItemMethod == null) {
+                         getItemMethod = XposedHelpers2.findMethodExactIfExists(adapter::class.java.superclass, "getItem", Integer.TYPE)
+                        }
+                        if (getItemMethod == null) {
+                         getItemMethod = XposedHelpers2.findMethodExactIfExists(adapter::class.java, "getItem", Integer.TYPE)
+                        }
+                        if (getItemMethod == null) {
+                         // Last resort: hook android.widget.BaseAdapter.getItem directly
+                         getItemMethod = XposedHelpers2.findMethodExactIfExists(
+                         android.widget.BaseAdapter::class.java, "getItem", Integer.TYPE
+                         )
                         }
                         if (getItemMethod != null) {
                             hookListViewGetItem(getItemMethod)
